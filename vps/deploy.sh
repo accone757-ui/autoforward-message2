@@ -1,20 +1,27 @@
 #!/bin/bash
-# Quick re-deploy script — run this whenever you update the app
-# Usage: bash /var/www/autoforward/vps/deploy.sh
+# ============================================================
+#  AutoForward — Quick Redeploy
+#  Run this after pushing updates to GitHub
+#  Usage: bash /var/www/autoforward/vps/deploy.sh
+# ============================================================
+set -e
 
 APP_DIR="/var/www/autoforward"
 cd $APP_DIR
 
-echo "[Deploy] Pulling latest code..."
-# git pull origin main    # uncomment if using git
+echo ""
+echo "[Deploy] Pulling latest from GitHub..."
+git pull origin main
 
-echo "[Deploy] Installing dependencies..."
-npm install --production=false
+echo "[Deploy] Installing/updating dependencies..."
+npm install --legacy-peer-deps
 
 echo "[Deploy] Restarting app..."
-pm2 restart autoforward
+pm2 restart autoforward --update-env
 
+echo ""
 echo "[Deploy] Status:"
 pm2 status autoforward
 
-echo "[Deploy] Done! https://autoforwardmessage.online"
+echo ""
+echo "✓ Deployed → https://autoforwardmessage.online"
