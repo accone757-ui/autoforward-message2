@@ -1,31 +1,16 @@
 #!/bin/bash
-# Nginx setup for autoforwardmessage.online
-# Run after setup.sh
+# Nginx-only setup (if running separately from setup.sh)
+APP_DIR="/var/www/autoforward"
 
-DOMAIN="autoforwardmessage.online"
-
-echo "[Nginx] Installing site config..."
-cp /var/www/autoforward/vps/nginx.conf /etc/nginx/sites-available/autoforward
-
-# Remove default site
+cp $APP_DIR/vps/nginx.conf /etc/nginx/sites-available/autoforward
 rm -f /etc/nginx/sites-enabled/default
-
-# Enable our site
 ln -sf /etc/nginx/sites-available/autoforward /etc/nginx/sites-enabled/autoforward
 
-# Test config
-nginx -t
+nginx -t && systemctl reload nginx
 
-# Reload
-systemctl reload nginx
-echo "[Nginx] Done. Site enabled for $DOMAIN"
-
-# Firewall
-echo "[UFW] Setting firewall rules..."
 ufw allow OpenSSH
-ufw allow 'Nginx Full'
+ufw allow 'Nginx HTTP'
 ufw --force enable
 ufw status
 
-echo ""
-echo "=== Now run: bash /var/www/autoforward/vps/ssl_setup.sh ==="
+echo "✓ Nginx configured for autoforwardmessage.online (Cloudflare proxy mode)"
