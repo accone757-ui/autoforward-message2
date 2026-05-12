@@ -54,6 +54,7 @@ export type Product = {
   price: number;
   stock: number;
   buy_link: string;
+  image_url: string | null;
   created_at: string;
 };
 
