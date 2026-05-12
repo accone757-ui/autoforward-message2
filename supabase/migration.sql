@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS public.accounts (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Add api_id and api_hash to existing accounts table if not present
 ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS api_id integer;
 ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS api_hash text;
 
@@ -42,8 +41,11 @@ CREATE TABLE IF NOT EXISTS public.products (
   price numeric(10,2) NOT NULL,
   stock integer NOT NULL DEFAULT 0,
   buy_link text NOT NULL DEFAULT 'https://t.me/digital_market1199',
+  image_url text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS image_url text;
 
 -- users: platform users (admin view)
 CREATE TABLE IF NOT EXISTS public.users (
@@ -57,17 +59,37 @@ CREATE TABLE IF NOT EXISTS public.users (
   last_active timestamptz NOT NULL DEFAULT now()
 );
 
--- Enable RLS (Row Level Security)
+-- Enable RLS
 ALTER TABLE public.accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.campaigns ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 
--- Allow all operations for now (open access with anon key)
 CREATE POLICY IF NOT EXISTS "allow_all_accounts" ON public.accounts FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY IF NOT EXISTS "allow_all_campaigns" ON public.campaigns FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY IF NOT EXISTS "allow_all_products" ON public.products FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY IF NOT EXISTS "allow_all_users" ON public.users FOR ALL USING (true) WITH CHECK (true);
+
+-- Storage bucket for product images
+-- Run in Supabase Dashboard → Storage → New bucket: name = "product-images", Public = true
+-- Or run this SQL:
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'product-images',
+  'product-images',
+  true,
+  5242880,
+  ARRAY['image/jpeg','image/png','image/webp','image/gif']
+) ON CONFLICT (id) DO NOTHING;
+
+CREATE POLICY IF NOT EXISTS "public read product images"
+  ON storage.objects FOR SELECT USING (bucket_id = 'product-images');
+
+CREATE POLICY IF NOT EXISTS "service role upload product images"
+  ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'product-images');
+
+CREATE POLICY IF NOT EXISTS "service role delete product images"
+  ON storage.objects FOR DELETE USING (bucket_id = 'product-images');
 
 -- Seed initial products
 INSERT INTO public.products (sku, region, price, stock, buy_link) VALUES
@@ -77,7 +99,6 @@ INSERT INTO public.products (sku, region, price, stock, buy_link) VALUES
   ('AC-3301', 'Germany 🇩🇪', 4.50, 9, 'https://t.me/digital_market1199')
 ON CONFLICT (sku) DO NOTHING;
 
--- Seed admin user
 INSERT INTO public.users (telegram_id, username, status, region, account_count) VALUES
   ('6464428203', 'Wolf_002196', 'active', 'Unknown', 0)
 ON CONFLICT (telegram_id) DO NOTHING;
