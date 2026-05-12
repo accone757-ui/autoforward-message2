@@ -15,7 +15,7 @@ function makeClient() {
   });
 }
 
-// ─── Dashboard Stats ────────────────────────────────────────────────────────
+// ─── Dashboard Stats ─────────────────────────────────────────────────────────
 
 export const getDashboardStats = createServerFn({ method: "GET" }).handler(async () => {
   const db = makeClient();
@@ -28,9 +28,7 @@ export const getDashboardStats = createServerFn({ method: "GET" }).handler(async
       db.from("accounts").select("id", { count: "exact", head: true }).eq("type", "self_created"),
       db.from("accounts").select("id", { count: "exact", head: true }).eq("type", "purchased"),
     ]);
-
   const messagesSent = (totalMessages.data ?? []).reduce((s, r) => s + (r.messages_sent ?? 0), 0);
-
   return {
     selfCreatedActive: selfCreated.count ?? 0,
     selfCreatedTotal: selfTotal.count ?? 0,
@@ -43,7 +41,7 @@ export const getDashboardStats = createServerFn({ method: "GET" }).handler(async
   };
 });
 
-// ─── Accounts ────────────────────────────────────────────────────────────────
+// ─── Accounts ─────────────────────────────────────────────────────────────────
 
 export const getAccounts = createServerFn({ method: "GET" }).handler(async () => {
   const db = makeClient();
@@ -100,7 +98,7 @@ export const deleteAccount = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-// ─── Products ────────────────────────────────────────────────────────────────
+// ─── Products ─────────────────────────────────────────────────────────────────
 
 export const getProducts = createServerFn({ method: "GET" }).handler(async () => {
   const db = makeClient();
@@ -111,13 +109,25 @@ export const getProducts = createServerFn({ method: "GET" }).handler(async () =>
 
 export const upsertProduct = createServerFn({ method: "POST" })
   .inputValidator(
-    (input: { id?: string; sku: string; region: string; price: number; stock: number; buy_link?: string }) => input,
+    (input: {
+      id?: string;
+      sku: string;
+      region: string;
+      price: number;
+      stock: number;
+      buy_link?: string;
+      image_url?: string | null;
+    }) => input,
   )
   .handler(async ({ data }) => {
     const db = makeClient();
     const { data: row, error } = await db
       .from("products")
-      .upsert({ ...data, buy_link: data.buy_link ?? "https://t.me/digital_market1199" })
+      .upsert({
+        ...data,
+        buy_link: data.buy_link ?? "https://t.me/digital_market1199",
+        image_url: data.image_url ?? null,
+      })
       .select()
       .single();
     if (error) throw new Error(error.message);
@@ -128,9 +138,41 @@ export const deleteProduct = createServerFn({ method: "POST" })
   .inputValidator((input: { id: string }) => input)
   .handler(async ({ data }) => {
     const db = makeClient();
+    // Get image path to delete from storage
+    const { data: product } = await db.from("products").select("image_url").eq("id", data.id).single();
+    if (product?.image_url) {
+      const url = product.image_url as string;
+      const parts = url.split("/product-images/");
+      if (parts[1]) {
+        await db.storage.from("product-images").remove([parts[1]]);
+      }
+    }
     const { error } = await db.from("products").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
+  });
+
+// ─── Product Image Upload ─────────────────────────────────────────────────────
+
+export const uploadProductImage = createServerFn({ method: "POST" })
+  .inputValidator((input: { base64: string; mimeType: string; fileName: string }) => input)
+  .handler(async ({ data }) => {
+    const db = makeClient();
+    const buffer = Buffer.from(data.base64, "base64");
+    const ext = data.mimeType.split("/")[1] ?? "jpg";
+    const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+
+    const { error } = await db.storage
+      .from("product-images")
+      .upload(path, buffer, {
+        contentType: data.mimeType,
+        upsert: false,
+      });
+
+    if (error) throw new Error(error.message);
+
+    const { data: urlData } = db.storage.from("product-images").getPublicUrl(path);
+    return { ok: true, url: urlData.publicUrl };
   });
 
 // ─── Users (Admin) ────────────────────────────────────────────────────────────
@@ -189,7 +231,7 @@ export const updateUserStatus = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-// ─── Campaigns ───────────────────────────────────────────────────────────────
+// ─── Campaigns ────────────────────────────────────────────────────────────────
 
 export const getCampaigns = createServerFn({ method: "GET" }).handler(async () => {
   const db = makeClient();
@@ -236,7 +278,7 @@ export const incrementCampaignMessages = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-// ─── Setup / Health Check ─────────────────────────────────────────────────────
+// ─── Health Check ─────────────────────────────────────────────────────────────
 
 export const checkDbReady = createServerFn({ method: "GET" }).handler(async () => {
   try {
