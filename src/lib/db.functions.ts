@@ -2,10 +2,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { createClient } from "@supabase/supabase-js";
 import ws from "ws";
 
-// Lazy factory — creates a fresh admin client inside each server function call
-// so the credentials are resolved at runtime inside the split bundle context.
-// We pass the `ws` package as Realtime transport because Node.js 20 has no
-// native WebSocket and @supabase/realtime-js would throw otherwise.
 function makeClient() {
   const url =
     process.env.SUPABASE_URL ||
@@ -58,7 +54,14 @@ export const getAccounts = createServerFn({ method: "GET" }).handler(async () =>
 
 export const createAccount = createServerFn({ method: "POST" })
   .inputValidator(
-    (input: { phone: string; session_string?: string; type?: "self_created" | "purchased"; region?: string }) => input,
+    (input: {
+      phone: string;
+      session_string?: string;
+      api_id?: number;
+      api_hash?: string;
+      type?: "self_created" | "purchased";
+      region?: string;
+    }) => input,
   )
   .handler(async ({ data }) => {
     const db = makeClient();
@@ -67,6 +70,8 @@ export const createAccount = createServerFn({ method: "POST" })
       .insert({
         phone: data.phone,
         session_string: data.session_string ?? null,
+        api_id: data.api_id ?? null,
+        api_hash: data.api_hash ?? null,
         type: data.type ?? "self_created",
         region: data.region ?? "Unknown",
         status: "active",
@@ -237,11 +242,9 @@ export const checkDbReady = createServerFn({ method: "GET" }).handler(async () =
   try {
     const db = makeClient();
     const { error } = await db.from("accounts").select("id").limit(1);
-    console.log("[checkDbReady] result →", error?.message ?? "ok");
     if (error) return { ready: false, errors: [error.message] };
     return { ready: true, errors: [] };
   } catch (e) {
-    console.error("[checkDbReady] threw:", e);
     return { ready: false, errors: [String(e)] };
   }
 });
