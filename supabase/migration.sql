@@ -6,12 +6,18 @@ CREATE TABLE IF NOT EXISTS public.accounts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   phone text NOT NULL,
   session_string text,
+  api_id integer,
+  api_hash text,
   status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'idle', 'banned', 'restricted')),
   type text NOT NULL DEFAULT 'self_created' CHECK (type IN ('self_created', 'purchased')),
   region text NOT NULL DEFAULT 'Unknown',
   messages_sent integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Add api_id and api_hash to existing accounts table if not present
+ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS api_id integer;
+ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS api_hash text;
 
 -- campaigns: forwarding campaigns
 CREATE TABLE IF NOT EXISTS public.campaigns (
