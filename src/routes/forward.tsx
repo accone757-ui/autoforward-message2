@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import {
   Send, Link2, Filter, Ban, Scissors, Repeat, Play, Square, Activity,
   Plus, Trash2, Tag, Loader2, CheckCircle2, AlertTriangle, Megaphone,
-  User, LinkIcon, Database,
+  User, LinkIcon, Users,
 } from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
 import { resolveTelegramChat, preflightCheckChat } from "@/lib/telegram.functions";
@@ -60,7 +60,6 @@ function ForwardPage() {
   const [resolvedSources, setResolvedSources] = useState<Array<{ input: string; id?: string; title?: string | null; error?: string }>>([]);
   const [preflight, setPreflight] = useState<Array<{ input: string; role: "source" | "target"; ok: boolean; message: string; needsJoin?: boolean; botUsername?: string | null }>>([]);
   const [sourceErrors, setSourceErrors] = useState<Array<{ input: string; error: string }>>([]);
-  const [selectedAccount, setSelectedAccount] = useState<string>("");
   const [campaignId, setCampaignId] = useState<string | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
 
@@ -70,18 +69,14 @@ function ForwardPage() {
 
   const resolveFn = useServerFn(resolveTelegramChat);
   const preflightFn = useServerFn(preflightCheckChat);
-  const getAccountsFn = useServerFn(getAccounts);
   const saveCampaignFn = useServerFn(saveCampaign);
   const incrementFn = useServerFn(incrementCampaignMessages);
   const runForwardFn = useServerFn(runForwardCampaign);
 
-  const activeAccounts = (accounts as Account[]).filter((a) => a.status === "active" && a.session_string);
-
-  useEffect(() => {
-    if (activeAccounts.length > 0 && !selectedAccount) {
-      setSelectedAccount(activeAccounts[0].id);
-    }
-  }, []);
+  // Only accounts that have session + api_id + api_hash
+  const activeAccounts = (accounts as Account[]).filter(
+    (a) => a.status === "active" && a.session_string && a.api_id && a.api_hash
+  );
 
   useEffect(() => {
     if (!running) return;
@@ -167,20 +162,21 @@ function ForwardPage() {
     }));
   };
 
-  const runOneCycle = async (
+  // Run one campaign cycle for ONE account
+  const runOneCycleForAccount = async (
     account: Account,
     srcIds: string[],
     tgtIds: string[],
   ) => {
     for (const srcId of srcIds) {
       if (!runningRef.current) break;
-      log(`Forwarding from ${srcId} → ${tgtIds.length} target(s)…`);
+      log(`[${account.phone}] Forwarding from ${srcId} → ${tgtIds.length} target(s)…`);
       try {
         const result = await runForwardFn({
           data: {
             sessionString: account.session_string!,
-            apiId: parseInt(process.env.TELEGRAM_API_ID ?? "0"),
-            apiHash: process.env.TELEGRAM_API_HASH ?? "",
+            apiId: account.api_id!,
+            apiHash: account.api_hash!,
             fromChatId: srcId,
             toChatIds: tgtIds,
             messageLimit,
@@ -193,34 +189,34 @@ function ForwardPage() {
           setSent((n) => n + result.forwarded);
           setFailed((n) => n + result.failed);
           if (campaignId) await incrementFn({ data: { id: campaignId, count: result.forwarded } }).catch(() => {});
-          log(`✓ Forwarded ${result.forwarded} messages${result.failed > 0 ? `, ${result.failed} failed` : ""}`);
-          if (result.errors.length > 0) result.errors.forEach((e) => log(`✗ ${e}`));
+          log(`[${account.phone}] ✓ Forwarded ${result.forwarded} messages${result.failed > 0 ? `, ${result.failed} failed` : ""}`);
+          if (result.errors.length > 0) result.errors.forEach((e) => log(`[${account.phone}] ✗ ${e}`));
         } else {
-          log(`✗ Campaign error: ${result.errors[0] ?? "Unknown"}`);
+          log(`[${account.phone}] ✗ Error: ${result.errors[0] ?? "Unknown"}`);
           setFailed((n) => n + 1);
         }
       } catch (e) {
-        log(`✗ Error: ${e instanceof Error ? e.message : "Unknown"}`);
+        log(`[${account.phone}] ✗ ${e instanceof Error ? e.message : "Unknown"}`);
       }
       if (delay > 0 && runningRef.current) {
-        log(`Waiting ${delay}s before next forward…`);
+        log(`[${account.phone}] Waiting ${delay}s…`);
         await new Promise((r) => setTimeout(r, delay * 1000));
       }
     }
   };
 
+  // Run ALL active accounts in parallel for one cycle
+  const runOneCycleAllAccounts = async (srcIds: string[], tgtIds: string[]) => {
+    await Promise.all(
+      activeAccounts.map((account) => runOneCycleForAccount(account, srcIds, tgtIds))
+    );
+  };
+
   const start = async () => {
     setGlobalError(null);
-    const account = (accounts as Account[]).find((a) => a.id === selectedAccount);
-    if (!account || !account.session_string) {
-      setGlobalError("No active account with session selected. Create an account first.");
-      return;
-    }
 
-    const apiId = parseInt(process.env.TELEGRAM_API_ID ?? "0");
-    const apiHash = process.env.TELEGRAM_API_HASH ?? "";
-    if (!apiId || !apiHash) {
-      setGlobalError("TELEGRAM_API_ID and TELEGRAM_API_HASH are required. Set them in environment variables.");
+    if (activeAccounts.length === 0) {
+      setGlobalError("Active userbot မရှိဘူး။ Create Account မှာ ဦးစွာ Userbot ဖန်တီးပါ။");
       return;
     }
 
@@ -228,8 +224,8 @@ function ForwardPage() {
     const targetList = targets.map((t) => t.trim()).filter(Boolean);
     const srcErrs = sourceList.map((s) => ({ input: s, error: validateSource(s) })).filter((r): r is { input: string; error: string } => r.error !== null);
 
-    if (sourceList.length === 0) { setSourceErrors([{ input: "", error: "Add at least one source." }]); return; }
-    if (targetList.length === 0) { setResolvedTargets([{ input: "", error: "Add at least one target channel." }]); return; }
+    if (sourceList.length === 0) { setSourceErrors([{ input: "", error: "Source အနည်းဆုံး တစ်ခုထည့်ပါ။" }]); return; }
+    if (targetList.length === 0) { setResolvedTargets([{ input: "", error: "Target channel အနည်းဆုံး တစ်ခုထည့်ပါ။" }]); return; }
     setSourceErrors(srcErrs);
     if (srcErrs.length > 0) return;
 
@@ -260,14 +256,7 @@ function ForwardPage() {
     let cId: string | null = null;
     try {
       const campaign = await saveCampaignFn({
-        data: {
-          sources: sourceList,
-          targets: targetList,
-          filters,
-          delay_secs: delay,
-          loop,
-          status: "running",
-        },
+        data: { sources: sourceList, targets: targetList, filters, delay_secs: delay, loop, status: "running" },
       });
       cId = (campaign as { id: string }).id;
       setCampaignId(cId);
@@ -277,11 +266,11 @@ function ForwardPage() {
     runningRef.current = true;
     loopRef.current = loop;
     setRunning(true);
-    log("Campaign started");
+    log(`Campaign started — ${activeAccounts.length} userbot(s) running in parallel`);
 
     const runLoop = async () => {
       do {
-        await runOneCycle(account, srcIds, tgtIds);
+        await runOneCycleAllAccounts(srcIds, tgtIds);
         if (loopRef.current && runningRef.current) {
           log(`Loop complete. Waiting ${loopDelay}s before next loop…`);
           await new Promise((r) => setTimeout(r, loopDelay * 1000));
@@ -324,37 +313,38 @@ function ForwardPage() {
         <p className="mt-1 text-xs tracking-[0.2em] uppercase text-muted-foreground">Campaign setup</p>
       </header>
 
-      {/* Account Selector */}
+      {/* Active Userbots Status */}
       <section className="neon-card text-neon-green p-4 mb-4">
         <div className="flex items-center gap-2 mb-3">
-          <Database className="w-4 h-4 text-neon-green" />
-          <h2 className="font-display tracking-[0.2em] text-sm text-neon-green">SELECT USERBOT ACCOUNT</h2>
+          <Users className="w-4 h-4 text-neon-green" />
+          <h2 className="font-display tracking-[0.2em] text-sm text-neon-green">ACTIVE USERBOTS</h2>
+          <span className="ml-auto font-display text-lg font-bold text-neon-green text-glow-green">
+            {activeAccounts.length}
+          </span>
         </div>
         {activeAccounts.length === 0 ? (
           <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            No active accounts with sessions found. Go to <strong>Create Account</strong> to authorize a userbot first.
+            Active userbot မရှိဘူး။{" "}
+            <a href="/create-account" className="underline text-neon-cyan">Create Account</a>{" "}
+            မှာ Userbot ဦးစွာ ဖန်တီးပါ။
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {activeAccounts.map((a) => (
-              <label key={a.id} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
-                selectedAccount === a.id ? "border-neon-green bg-neon-green/10" : "border-border hover:border-neon-green/40"
-              }`}>
-                <input
-                  type="radio"
-                  name="account"
-                  value={a.id}
-                  checked={selectedAccount === a.id}
-                  onChange={() => setSelectedAccount(a.id)}
-                  className="accent-neon-green"
-                />
-                <div>
-                  <div className="text-sm font-mono text-foreground">{a.phone}</div>
-                  <div className="text-[10px] text-muted-foreground">{a.type.replace("_", " ")} · {a.region}</div>
+              <div key={a.id} className="flex items-center justify-between px-3 py-2 rounded-lg border border-neon-green/20 bg-neon-green/5">
+                <div className="flex items-center gap-2">
+                  <span className="relative flex w-2 h-2">
+                    <span className="absolute inset-0 rounded-full bg-neon-green animate-ping opacity-60" />
+                    <span className="relative rounded-full w-2 h-2 bg-neon-green" />
+                  </span>
+                  <span className="font-mono text-sm text-foreground">{a.phone}</span>
                 </div>
-                <span className="ml-auto text-[10px] text-neon-green border border-neon-green/40 px-2 py-0.5 rounded-full">active</span>
-              </label>
+                <span className="text-[10px] text-neon-green/70 font-mono">API ID: {a.api_id}</span>
+              </div>
             ))}
+            <p className="text-[10px] text-muted-foreground mt-2">
+              Campaign run မည့်အခါ userbot အားလုံး တပြိုင်နက် forward လုပ်မည်
+            </p>
           </div>
         )}
       </section>
@@ -413,7 +403,6 @@ function ForwardPage() {
           batchSize={batchSize}
         />
 
-        {/* Message limit */}
         <div className="border-t border-border pt-3">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <span className="text-xs tracking-[0.2em] uppercase text-muted-foreground">Messages Per Run</span>
@@ -430,7 +419,7 @@ function ForwardPage() {
               })}
             </div>
           </div>
-          <p className="mt-1 text-[10px] text-muted-foreground">How many latest messages to forward per campaign run.</p>
+          <p className="mt-1 text-[10px] text-muted-foreground">Campaign run တစ်ကြိမ်မှာ forward ပမာဏ</p>
         </div>
 
         <div className="border-t border-border pt-3">
@@ -535,7 +524,9 @@ function ForwardPage() {
                 <span className="absolute inset-0 rounded-full bg-neon-green animate-ping opacity-75" />
                 <span className="relative rounded-full w-2.5 h-2.5 bg-neon-green" />
               </span>
-              <span className="font-display tracking-[0.2em] text-sm text-neon-green text-glow-green">LIVE · CAMPAIGN RUNNING</span>
+              <span className="font-display tracking-[0.2em] text-sm text-neon-green text-glow-green">
+                LIVE · {activeAccounts.length} USERBOTS RUNNING
+              </span>
             </div>
             <Activity className="w-4 h-4 text-neon-green" />
           </div>
@@ -556,11 +547,10 @@ function ForwardPage() {
         </section>
       )}
 
-      {/* Campaign Log */}
       {campaignLog.length > 0 && (
         <section className="neon-card text-neon-cyan p-4 mb-4">
           <h2 className="font-display tracking-[0.2em] text-sm text-neon-cyan mb-2">CAMPAIGN LOG</h2>
-          <div className="rounded-lg border border-border bg-black/60 p-2 max-h-40 overflow-y-auto space-y-0.5">
+          <div className="rounded-lg border border-border bg-black/60 p-2 max-h-48 overflow-y-auto space-y-0.5">
             {campaignLog.map((line, i) => (
               <div key={i} className={`font-mono text-[10px] ${line.includes("✓") ? "text-neon-green" : line.includes("✗") ? "text-destructive" : "text-muted-foreground"}`}>
                 {line}
@@ -590,14 +580,14 @@ function ForwardPage() {
       {(resolving || resolvedTargets.length > 0) && !running && (
         <section className="neon-card text-neon-cyan p-4 mb-4">
           <div className="flex items-center gap-2 mb-2">
-            {resolving ? <Loader2 className="w-4 h-4 text-neon-cyan animate-spin" /> : resolvedTargets.some((r) => r.error) ? <AlertTriangle className="w-4 h-4 text-neon-red" /> : <CheckCircle2 className="w-4 h-4 text-neon-green" />}
+            {resolving ? <Loader2 className="w-4 h-4 text-neon-cyan animate-spin" /> : resolvedTargets.some((r) => r.error) ? <AlertTriangle className="w-4 h-4 text-destructive" /> : <CheckCircle2 className="w-4 h-4 text-neon-green" />}
             <h2 className="font-display tracking-[0.2em] text-sm">{resolving ? "RESOLVING TARGETS…" : "TARGET REAL IDS"}</h2>
           </div>
           <div className="rounded-lg border border-border bg-black/50 divide-y divide-border">
             {resolvedTargets.map((r, i) => (
               <div key={i} className="flex items-center justify-between gap-3 px-3 py-2">
                 <span className="font-mono text-[11px] text-muted-foreground truncate min-w-0 flex-1">{r.input || "—"}</span>
-                {r.error ? <span className="font-mono text-[11px] text-neon-red truncate">{r.error}</span> : <span className="font-mono text-[11px] text-neon-cyan truncate">{r.id}{r.title ? ` · ${r.title}` : ""}</span>}
+                {r.error ? <span className="font-mono text-[11px] text-destructive truncate">{r.error}</span> : <span className="font-mono text-[11px] text-neon-cyan truncate">{r.id}{r.title ? ` · ${r.title}` : ""}</span>}
               </div>
             ))}
           </div>
@@ -660,7 +650,7 @@ function ForwardPage() {
         <button onClick={start} disabled={resolving || activeAccounts.length === 0}
           className="w-full flex items-center justify-center gap-2 py-3.5 rounded-lg font-display tracking-[0.25em] text-sm bg-neon-cyan border border-neon-cyan text-background animate-pulse-glow disabled:opacity-50">
           {resolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          <span>{resolving ? "RESOLVING…" : "LAUNCH CAMPAIGN"}</span>
+          <span>{resolving ? "RESOLVING…" : `LAUNCH CAMPAIGN (${activeAccounts.length} USERBOTS)`}</span>
         </button>
       )}
     </AppLayout>
