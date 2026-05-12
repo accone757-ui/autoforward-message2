@@ -1,78 +1,191 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
-import { Shield, Upload, DollarSign, Users, Activity, MoreVertical, Plus, Trash2, Loader2 } from "lucide-react";
+import {
+  Shield, Users, Activity, Plus, Trash2, Loader2,
+  Smartphone, CheckCircle2, XCircle, Clock, Ban,
+  ChevronDown, Search, ToggleLeft, ToggleRight,
+} from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
 import { StatCard } from "@/components/StatCard";
-import { getAdminStats, getUsers, updateUserStatus, upsertUser, upsertProduct, deleteProduct } from "@/lib/db.functions";
-import { getProducts } from "@/lib/db.functions";
-import type { User, Product } from "@/lib/supabase";
+import {
+  getAdminStats, getUsers, updateUserStatus,
+  upsertProduct, deleteProduct, getProducts,
+  getAccounts, deleteAccount, updateAccountStatus,
+} from "@/lib/db.functions";
+import type { User, Product, Account } from "@/lib/supabase";
 
 export const Route = createFileRoute("/admin")({
   loader: async () => {
-    const [statsRes, usersRes, productsRes] = await Promise.allSettled([
+    const [statsRes, usersRes, productsRes, accountsRes] = await Promise.allSettled([
       getAdminStats(),
       getUsers(),
       getProducts(),
+      getAccounts(),
     ]);
     return {
-      stats: statsRes.status === "fulfilled" ? statsRes.value : { totalUsers: 0, activeUsers: 0, bannedUsers: 0, activeSessions: 0 },
+      stats: statsRes.status === "fulfilled"
+        ? statsRes.value
+        : { totalUsers: 0, activeUsers: 0, bannedUsers: 0, activeSessions: 0 },
       users: usersRes.status === "fulfilled" ? usersRes.value : [],
       products: productsRes.status === "fulfilled" ? productsRes.value : [],
+      accounts: accountsRes.status === "fulfilled" ? accountsRes.value : [],
     };
   },
   component: Admin,
 });
 
+const STATUS_CYCLE: Record<string, "active" | "idle" | "banned" | "restricted"> = {
+  active: "idle",
+  idle: "banned",
+  banned: "active",
+  restricted: "active",
+};
+
+const STATUS_COLOR: Record<string, string> = {
+  active: "border-neon-green text-neon-green",
+  idle: "border-neon-cyan text-neon-cyan",
+  banned: "border-destructive text-destructive",
+  restricted: "border-yellow-500 text-yellow-400",
+};
+
 function Admin() {
-  const { stats, users: initialUsers, products: initialProducts } = Route.useLoaderData();
+  const { stats, users: initialUsers, products: initialProducts, accounts: initialAccounts } = Route.useLoaderData();
+
   const [users, setUsers] = useState<User[]>(initialUsers as User[]);
   const [products, setProducts] = useState<Product[]>(initialProducts as Product[]);
-  const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>(initialAccounts as Account[]);
 
-  // New product form
+  const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "idle" | "banned" | "restricted">("all");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
+
+  // Product form
   const [newSku, setNewSku] = useState("");
   const [newRegion, setNewRegion] = useState("");
   const [newPrice, setNewPrice] = useState("");
   const [newStock, setNewStock] = useState("");
   const [savingProduct, setSavingProduct] = useState(false);
 
-  const updateStatusFn = useServerFn(updateUserStatus);
+  const updateUserStatusFn = useServerFn(updateUserStatus);
   const upsertProductFn = useServerFn(upsertProduct);
   const deleteProductFn = useServerFn(deleteProduct);
+  const updateAccountFn = useServerFn(updateAccountStatus);
+  const deleteAccountFn = useServerFn(deleteAccount);
 
-  const cycleStatus = async (user: User) => {
+  // ── Userbot helpers ──────────────────────────────────────────────────────
+
+  const filteredAccounts = accounts.filter((a) => {
+    const matchSearch = !search || a.phone.includes(search) || (a.api_id?.toString() ?? "").includes(search);
+    const matchStatus = statusFilter === "all" || a.status === statusFilter;
+    return matchSearch && matchStatus;
+  });
+
+  const allSelected = filteredAccounts.length > 0 && filteredAccounts.every((a) => selected.has(a.id));
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(filteredAccounts.map((a) => a.id)));
+    }
+  };
+
+  const cycleAccountStatus = async (acc: Account) => {
+    const next = STATUS_CYCLE[acc.status] ?? "active";
+    setLoadingId(acc.id);
+    try {
+      await updateAccountFn({ data: { id: acc.id, status: next } });
+      setAccounts((prev) => prev.map((a) => a.id === acc.id ? { ...a, status: next } : a));
+    } finally {
+      setLoadingId(null);
+    }
+  };
+
+  const handleDeleteAccount = async (id: string) => {
+    if (!confirm("ဒီ userbot ကို ဖျက်မှာ သေချာလား?")) return;
+    setLoadingId(id);
+    try {
+      await deleteAccountFn({ data: { id } });
+      setAccounts((prev) => prev.filter((a) => a.id !== id));
+      setSelected((prev) => { const next = new Set(prev); next.delete(id); return next; });
+    } finally {
+      setLoadingId(null);
+    }
+  };
+
+  const bulkSetStatus = async (status: "active" | "idle" | "banned" | "restricted") => {
+    if (selected.size === 0) return;
+    setBulkLoading(true);
+    try {
+      await Promise.all(
+        [...selected].map((id) => updateAccountFn({ data: { id, status } }))
+      );
+      setAccounts((prev) =>
+        prev.map((a) => selected.has(a.id) ? { ...a, status } : a)
+      );
+      setSelected(new Set());
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const bulkDelete = async () => {
+    if (selected.size === 0) return;
+    if (!confirm(`${selected.size} userbot ကို ဖျက်မှာ သေချာလား?`)) return;
+    setBulkLoading(true);
+    try {
+      await Promise.all([...selected].map((id) => deleteAccountFn({ data: { id } })));
+      setAccounts((prev) => prev.filter((a) => !selected.has(a.id)));
+      setSelected(new Set());
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  // ── Stats derived from accounts ────────────────────────────────────────
+  const botActive = accounts.filter((a) => a.status === "active" && a.session_string).length;
+  const botIdle = accounts.filter((a) => a.status === "idle").length;
+  const botBanned = accounts.filter((a) => a.status === "banned" || a.status === "restricted").length;
+  const botNoSession = accounts.filter((a) => !a.session_string).length;
+
+  // ── User helpers ─────────────────────────────────────────────────────────
+
+  const cycleUserStatus = async (user: User) => {
     const next: Record<string, "active" | "idle" | "banned"> = {
-      active: "idle",
-      idle: "banned",
-      banned: "active",
+      active: "idle", idle: "banned", banned: "active",
     };
     const nextStatus = next[user.status] ?? "active";
     setLoadingId(user.id);
     try {
-      await updateStatusFn({ data: { id: user.id, status: nextStatus } });
+      await updateUserStatusFn({ data: { id: user.id, status: nextStatus } });
       setUsers((prev) => prev.map((u) => u.id === user.id ? { ...u, status: nextStatus } : u));
     } finally {
       setLoadingId(null);
     }
   };
 
+  // ── Product helpers ──────────────────────────────────────────────────────
+
   const addProduct = async () => {
     if (!newSku || !newRegion || !newPrice) return;
     setSavingProduct(true);
     try {
       const row = await upsertProductFn({
-        data: {
-          sku: newSku,
-          region: newRegion,
-          price: parseFloat(newPrice),
-          stock: parseInt(newStock) || 0,
-        },
+        data: { sku: newSku, region: newRegion, price: parseFloat(newPrice), stock: parseInt(newStock) || 0 },
       });
       setProducts((prev) => [...prev, row as Product]);
       setNewSku(""); setNewRegion(""); setNewPrice(""); setNewStock("");
-    } catch (e) {
-      console.error(e);
     } finally {
       setSavingProduct(false);
     }
@@ -93,11 +206,204 @@ function Admin() {
         <Shield className="w-8 h-8 text-neon-purple text-glow-purple" />
       </header>
 
+      {/* ── Overview Stats ─────────────────────────────────────────────── */}
       <section className="grid grid-cols-2 gap-3 mb-5">
         <StatCard label="Total Users" value={stats.totalUsers} sub={`${stats.activeUsers} online`} icon={Users} color="cyan" />
-        <StatCard label="Active Sessions" value={stats.activeSessions} sub={`${stats.bannedUsers} banned`} icon={Activity} color="purple" />
+        <StatCard label="Active Userbots" value={botActive} sub={`${botBanned} banned`} icon={Activity} color="purple" />
       </section>
 
+      {/* ── Userbot Control ────────────────────────────────────────────── */}
+      <section className="neon-card p-4 mb-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Smartphone className="w-4 h-4 text-neon-green" />
+            <h2 className="font-display tracking-[0.2em] text-sm text-neon-green">USERBOT CONTROL</h2>
+            <span className="font-display text-lg font-bold text-neon-green text-glow-green ml-1">
+              {accounts.length}
+            </span>
+          </div>
+        </div>
+
+        {/* Quick stats row */}
+        <div className="grid grid-cols-4 gap-2 mb-4">
+          {[
+            { label: "Active", value: botActive, color: "text-neon-green border-neon-green/30 bg-neon-green/5" },
+            { label: "Idle", value: botIdle, color: "text-neon-cyan border-neon-cyan/30 bg-neon-cyan/5" },
+            { label: "Banned", value: botBanned, color: "text-destructive border-destructive/30 bg-destructive/5" },
+            { label: "No Session", value: botNoSession, color: "text-yellow-400 border-yellow-500/30 bg-yellow-500/5" },
+          ].map((s) => (
+            <div key={s.label} className={`rounded-lg border px-2 py-2 text-center ${s.color}`}>
+              <div className="font-display text-xl font-bold">{s.value}</div>
+              <div className="text-[9px] tracking-widest uppercase mt-0.5 opacity-80">{s.label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Search + Filter */}
+        <div className="flex items-center gap-2 mb-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Phone or API ID ရှာ…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full bg-input/60 border border-border rounded-lg pl-8 pr-3 py-2 text-sm focus:outline-none focus:border-neon-green"
+            />
+          </div>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+            className="bg-input/60 border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-neon-green text-foreground"
+          >
+            <option value="all">All</option>
+            <option value="active">Active</option>
+            <option value="idle">Idle</option>
+            <option value="banned">Banned</option>
+            <option value="restricted">Restricted</option>
+          </select>
+        </div>
+
+        {/* Bulk action bar */}
+        {selected.size > 0 && (
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <span className="text-xs text-neon-cyan font-medium">{selected.size} ရွေးထားသည်</span>
+            {bulkLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-neon-cyan" />}
+            <button
+              onClick={() => bulkSetStatus("active")}
+              disabled={bulkLoading}
+              className="text-[11px] px-2.5 py-1 rounded-md border border-neon-green/50 text-neon-green hover:bg-neon-green/10 transition-colors disabled:opacity-40"
+            >
+              Activate All
+            </button>
+            <button
+              onClick={() => bulkSetStatus("idle")}
+              disabled={bulkLoading}
+              className="text-[11px] px-2.5 py-1 rounded-md border border-neon-cyan/50 text-neon-cyan hover:bg-neon-cyan/10 transition-colors disabled:opacity-40"
+            >
+              Idle All
+            </button>
+            <button
+              onClick={() => bulkSetStatus("banned")}
+              disabled={bulkLoading}
+              className="text-[11px] px-2.5 py-1 rounded-md border border-destructive/50 text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40"
+            >
+              Ban All
+            </button>
+            <button
+              onClick={bulkDelete}
+              disabled={bulkLoading}
+              className="text-[11px] px-2.5 py-1 rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 ml-auto"
+            >
+              Delete Selected
+            </button>
+          </div>
+        )}
+
+        {/* Userbot table */}
+        {accounts.length === 0 ? (
+          <div className="text-center py-8 text-sm text-muted-foreground">
+            Userbot မရှိသေးဘူး။ Client တွေ Create Account မှာ ဖန်တီးရင် ဒီမှာ ပေါ်လာမည်။
+          </div>
+        ) : filteredAccounts.length === 0 ? (
+          <div className="text-center py-6 text-sm text-muted-foreground">ရှာဖွေမှုနှင့် ကိုက်ညီသော userbot မရှိဘူး</div>
+        ) : (
+          <div className="rounded-lg border border-border overflow-hidden">
+            {/* Table header */}
+            <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-2 items-center px-3 py-2 bg-black/40 border-b border-border text-[10px] tracking-[0.15em] uppercase text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleSelectAll}
+                className="accent-neon-green"
+              />
+              <span>Phone / API ID</span>
+              <span className="text-center">Session</span>
+              <span className="text-center">Msgs</span>
+              <span className="text-center">Status</span>
+              <span />
+            </div>
+
+            {/* Table rows */}
+            <ul className="divide-y divide-border">
+              {filteredAccounts.map((acc) => (
+                <li
+                  key={acc.id}
+                  className={`grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-2 items-center px-3 py-3 transition-colors ${
+                    selected.has(acc.id) ? "bg-neon-green/5" : "hover:bg-white/[0.02]"
+                  }`}
+                >
+                  {/* Checkbox */}
+                  <input
+                    type="checkbox"
+                    checked={selected.has(acc.id)}
+                    onChange={() => toggleSelect(acc.id)}
+                    className="accent-neon-green"
+                  />
+
+                  {/* Phone + API info */}
+                  <div className="min-w-0">
+                    <div className="font-mono text-sm text-foreground truncate">{acc.phone}</div>
+                    <div className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-2">
+                      {acc.api_id ? (
+                        <span className="text-neon-cyan/70 font-mono">ID:{acc.api_id}</span>
+                      ) : (
+                        <span className="text-yellow-500/70">No API creds</span>
+                      )}
+                      <span className="text-border">·</span>
+                      <span>{acc.type.replace("_", " ")}</span>
+                    </div>
+                  </div>
+
+                  {/* Session indicator */}
+                  <div className="flex justify-center">
+                    {acc.session_string ? (
+                      <CheckCircle2 className="w-4 h-4 text-neon-green" title="Session active" />
+                    ) : (
+                      <XCircle className="w-4 h-4 text-destructive/60" title="No session" />
+                    )}
+                  </div>
+
+                  {/* Messages sent */}
+                  <div className="text-center font-mono text-xs text-muted-foreground min-w-[36px]">
+                    {acc.messages_sent ?? 0}
+                  </div>
+
+                  {/* Status badge — clickable to cycle */}
+                  <button
+                    onClick={() => cycleAccountStatus(acc)}
+                    disabled={loadingId === acc.id}
+                    title="Click to change status"
+                    className={`text-[10px] tracking-wider uppercase px-2 py-0.5 rounded-full border transition-colors disabled:opacity-50 ${STATUS_COLOR[acc.status] ?? "border-border text-muted-foreground"}`}
+                  >
+                    {loadingId === acc.id ? (
+                      <Loader2 className="w-3 h-3 animate-spin inline" />
+                    ) : (
+                      acc.status
+                    )}
+                  </button>
+
+                  {/* Delete */}
+                  <button
+                    onClick={() => handleDeleteAccount(acc.id)}
+                    disabled={loadingId === acc.id}
+                    className="text-muted-foreground hover:text-destructive transition-colors disabled:opacity-40"
+                    title="Userbot ဖျက်"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <p className="mt-3 text-[10px] text-muted-foreground">
+          Status ပြောင်းချင်ရင် badge ကို click နှိပ်ပါ: active → idle → banned → active
+        </p>
+      </section>
+
+      {/* ── Store Products ─────────────────────────────────────────────── */}
       <section className="neon-card text-neon-cyan p-4 mb-4">
         <h2 className="font-display tracking-[0.2em] text-sm text-neon-cyan mb-3">MANAGE STORE PRODUCTS</h2>
         <div className="grid grid-cols-2 gap-2 mb-3">
@@ -112,7 +418,7 @@ function Admin() {
           <button
             onClick={addProduct}
             disabled={savingProduct || !newSku || !newRegion || !newPrice}
-            className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-neon-cyan text-neon-cyan text-sm hover:border-glow-cyan transition-shadow disabled:opacity-40"
+            className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-neon-cyan text-neon-cyan text-sm hover:bg-neon-cyan/10 transition-colors disabled:opacity-40"
           >
             {savingProduct ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
             Add Product
@@ -139,10 +445,11 @@ function Admin() {
         )}
       </section>
 
+      {/* ── Platform Users ─────────────────────────────────────────────── */}
       <section className="neon-card text-neon-purple p-4">
-        <h2 className="font-display tracking-[0.2em] text-sm text-neon-purple mb-3">LIVE SESSIONS</h2>
+        <h2 className="font-display tracking-[0.2em] text-sm text-neon-purple mb-3">PLATFORM USERS</h2>
         {users.length === 0 ? (
-          <p className="text-xs text-muted-foreground text-center py-4">No users yet. Run the database migration first.</p>
+          <p className="text-xs text-muted-foreground text-center py-4">User မရှိသေးဘူး</p>
         ) : (
           <ul className="divide-y divide-border">
             {users.map((u) => (
@@ -152,28 +459,16 @@ function Admin() {
                   <div className="text-xs text-muted-foreground">{u.account_count} accounts · {u.region}</div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span
-                    className={`text-[10px] tracking-wider uppercase px-2 py-0.5 rounded-full border ${
-                      u.status === "active"
-                        ? "border-neon-green text-neon-green"
-                        : u.status === "idle"
-                        ? "border-neon-cyan text-neon-cyan"
+                  <button
+                    onClick={() => cycleUserStatus(u)}
+                    disabled={loadingId === u.id}
+                    className={`text-[10px] tracking-wider uppercase px-2 py-0.5 rounded-full border transition-colors disabled:opacity-50 ${
+                      u.status === "active" ? "border-neon-green text-neon-green"
+                        : u.status === "idle" ? "border-neon-cyan text-neon-cyan"
                         : "border-destructive text-destructive"
                     }`}
                   >
-                    {u.status}
-                  </span>
-                  <button
-                    onClick={() => cycleStatus(u)}
-                    disabled={loadingId === u.id}
-                    className="text-muted-foreground hover:text-foreground disabled:opacity-40"
-                    title="Cycle status"
-                  >
-                    {loadingId === u.id ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <MoreVertical className="w-4 h-4" />
-                    )}
+                    {loadingId === u.id ? <Loader2 className="w-3 h-3 animate-spin inline" /> : u.status}
                   </button>
                 </div>
               </li>
