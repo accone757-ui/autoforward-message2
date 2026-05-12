@@ -1,6 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
 
-// Use || so empty string also falls through to the hardcoded default
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
   "https://vdkbetuwgozvbkzelmur.supabase.co";
@@ -13,12 +12,10 @@ const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZka2JldHV3Z296dmJremVsbXVyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3ODUxMDY5MCwiZXhwIjoyMDk0MDg2NjkwfQ.JGq_JII1T8LpKzYkzboahml89ygYx9U0v6K8sxW_mfA";
 
-// Public client — for browser / anon access
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: false },
 });
 
-// Admin client — service role, bypasses RLS (server-side only)
 export const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
@@ -27,6 +24,8 @@ export type Account = {
   id: string;
   phone: string;
   session_string: string | null;
+  api_id: number | null;
+  api_hash: string | null;
   status: "active" | "idle" | "banned" | "restricted";
   type: "self_created" | "purchased";
   region: string;
