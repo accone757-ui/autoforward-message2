@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
-import { Phone, KeyRound, ShieldCheck, Sparkles, Check, Loader2, Hash } from "lucide-react";
+import { Phone, Loader2, Check, ExternalLink, Trash2, ToggleLeft, ToggleRight } from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
 import { createAccount, getAccounts, deleteAccount, updateAccountStatus } from "@/lib/db.functions";
 import { tgSendCode, tgSignIn } from "@/lib/session.functions";
@@ -15,19 +15,14 @@ export const Route = createFileRoute("/create-account")({
   component: CreateAccount,
 });
 
-const steps = [
-  { label: "Phone + API", icon: Phone },
-  { label: "OTP Code", icon: KeyRound },
-  { label: "2FA Password", icon: ShieldCheck },
-  { label: "Generate Session", icon: Sparkles },
-];
+type Step = "form" | "otp" | "twofa" | "done";
 
 function CreateAccount() {
   const { accounts: initialAccounts } = Route.useLoaderData();
   const [accounts, setAccounts] = useState<Account[]>(initialAccounts);
-  const [step, setStep] = useState(0);
-  const [done, setDone] = useState(false);
-  const [saving, setSaving] = useState(false);
+
+  const [step, setStep] = useState<Step>("form");
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [phone, setPhone] = useState("");
@@ -36,7 +31,6 @@ function CreateAccount() {
   const [otp, setOtp] = useState("");
   const [twoFa, setTwoFa] = useState("");
   const [phoneCodeHash, setPhoneCodeHash] = useState("");
-  const [needs2FA, setNeeds2FA] = useState(false);
 
   const createFn = useServerFn(createAccount);
   const deleteFn = useServerFn(deleteAccount);
@@ -45,76 +39,79 @@ function CreateAccount() {
   const signInFn = useServerFn(tgSignIn);
 
   const handleSendCode = async () => {
-    if (!phone || !apiId || !apiHash) {
-      setError("Phone, API ID and API Hash are required.");
+    if (!phone.trim() || !apiId.trim() || !apiHash.trim()) {
+      setError("Phone, API ID နှင့် API Hash ဖြည့်ပါ။");
       return;
     }
-    setSaving(true);
+    setLoading(true);
     setError(null);
     try {
-      const res = await sendCodeFn({ data: { phone, apiId: parseInt(apiId), apiHash } });
-      if (!res.ok) {
-        setError(res.error);
-        return;
-      }
+      const res = await sendCodeFn({ data: { phone: phone.trim(), apiId: parseInt(apiId), apiHash: apiHash.trim() } });
+      if (!res.ok) { setError(res.error); return; }
       setPhoneCodeHash(res.phoneCodeHash);
-      setStep(1);
+      setStep("otp");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to send code");
+      setError(e instanceof Error ? e.message : "Code ပို့မရဘူး");
     } finally {
-      setSaving(false);
+      setLoading(false);
     }
   };
 
-  const handleSignIn = async () => {
-    if (!otp) { setError("Enter the OTP code."); return; }
-    setSaving(true);
+  const handleVerify = async () => {
+    if (!otp.trim()) { setError("OTP ကုဒ် ရိုက်ထည့်ပါ။"); return; }
+    setLoading(true);
     setError(null);
     try {
       const res = await signInFn({
-        data: { phone, apiId: parseInt(apiId), apiHash, phoneCodeHash, code: otp },
+        data: { phone: phone.trim(), apiId: parseInt(apiId), apiHash: apiHash.trim(), phoneCodeHash, code: otp.trim() },
       });
       if (!res.ok) {
-        if (res.needs2FA) {
-          setNeeds2FA(true);
-          setStep(2);
-        } else {
-          setError(res.error);
-        }
+        if (res.needs2FA) { setStep("twofa"); return; }
+        setError(res.error);
         return;
       }
       await saveAccount(res.sessionString);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Sign in failed");
+      setError(e instanceof Error ? e.message : "Verify မရဘူး");
     } finally {
-      setSaving(false);
+      setLoading(false);
     }
   };
 
-  const handleSignIn2FA = async () => {
-    if (!twoFa) { setError("Enter your 2FA password."); return; }
-    setSaving(true);
+  const handleVerify2FA = async () => {
+    if (!twoFa.trim()) { setError("2FA Password ရိုက်ထည့်ပါ။"); return; }
+    setLoading(true);
     setError(null);
     try {
       const res = await signInFn({
-        data: { phone, apiId: parseInt(apiId), apiHash, phoneCodeHash, code: otp, password: twoFa },
+        data: { phone: phone.trim(), apiId: parseInt(apiId), apiHash: apiHash.trim(), phoneCodeHash, code: otp.trim(), password: twoFa },
       });
       if (!res.ok) { setError(res.error); return; }
       await saveAccount(res.sessionString);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "2FA sign in failed");
+      setError(e instanceof Error ? e.message : "2FA မရဘူး");
     } finally {
-      setSaving(false);
+      setLoading(false);
     }
   };
 
   const saveAccount = async (sessionString: string) => {
-    setStep(3);
     const row = await createFn({
-      data: { phone, session_string: sessionString, type: "self_created", status: "active" } as Parameters<typeof createFn>[0]["data"],
+      data: {
+        phone: phone.trim(),
+        session_string: sessionString,
+        api_id: parseInt(apiId),
+        api_hash: apiHash.trim(),
+        type: "self_created",
+      } as Parameters<typeof createFn>[0]["data"],
     });
     setAccounts((prev) => [row as Account, ...prev]);
-    setDone(true);
+    setStep("done");
+  };
+
+  const reset = () => {
+    setStep("form"); setPhone(""); setApiId(""); setApiHash("");
+    setOtp(""); setTwoFa(""); setPhoneCodeHash(""); setError(null);
   };
 
   const handleDelete = async (id: string) => {
@@ -131,169 +128,212 @@ function CreateAccount() {
     setAccounts((prev) => prev.map((a) => a.id === acc.id ? { ...a, status: nextStatus } : a));
   };
 
-  const reset = () => {
-    setDone(false); setStep(0); setPhone(""); setApiId(""); setApiHash("");
-    setOtp(""); setTwoFa(""); setPhoneCodeHash(""); setNeeds2FA(false); setError(null);
-  };
-
   return (
     <AppLayout>
       <header className="mb-6">
         <h1 className="font-display text-3xl font-bold text-neon-green text-glow-green">AUTHORIZE</h1>
-        <p className="mt-1 text-xs tracking-[0.2em] uppercase text-muted-foreground">Create new userbot session</p>
+        <p className="mt-1 text-xs tracking-[0.2em] uppercase text-muted-foreground">
+          Telegram Userbot Session ဖန်တီး
+        </p>
       </header>
 
-      <ol className="grid grid-cols-4 gap-2 mb-6">
-        {steps.map((s, i) => {
-          const active = i === step;
-          const complete = i < step || done;
-          return (
-            <li key={s.label} className="flex flex-col items-center gap-2">
-              <div className={`grid place-items-center w-10 h-10 rounded-full border transition-all ${
-                complete ? "border-neon-green text-neon-green border-glow-green"
-                  : active ? "border-neon-cyan text-neon-cyan border-glow-cyan"
-                  : "border-border text-muted-foreground"
-              }`}>
-                {complete ? <Check className="w-4 h-4" /> : <s.icon className="w-4 h-4" />}
-              </div>
-              <span className="text-[9px] tracking-wider uppercase text-muted-foreground text-center leading-tight">{s.label}</span>
-            </li>
-          );
-        })}
-      </ol>
-
-      <section className="neon-card text-neon-green p-5 mb-5">
-        {done ? (
-          <div className="text-center py-6">
-            <div className="mx-auto grid place-items-center w-16 h-16 rounded-full bg-neon-green/10 border border-neon-green border-glow-green animate-pulse-glow text-neon-green mb-4">
-              <Check className="w-8 h-8" />
+      <div className="neon-card p-5 mb-5">
+        {step === "done" ? (
+          <div className="text-center py-8">
+            <div className="mx-auto grid place-items-center w-16 h-16 rounded-full bg-neon-green/10 border border-neon-green border-glow-green mb-4">
+              <Check className="w-8 h-8 text-neon-green" />
             </div>
-            <h3 className="font-display text-xl text-neon-green text-glow-green">SESSION SAVED</h3>
-            <p className="text-xs text-muted-foreground mt-1">Userbot session stored in database</p>
-            <button onClick={reset} className="mt-5 px-5 py-2 rounded-lg border border-neon-cyan text-neon-cyan hover:border-glow-cyan transition-shadow text-sm">
-              Add Another
+            <h3 className="font-display text-xl text-neon-green text-glow-green">Account Saved Successfully!</h3>
+            <p className="text-xs text-muted-foreground mt-2">Userbot session database မှာ သိမ်းပြီးပြီ</p>
+            <button
+              onClick={reset}
+              className="mt-6 px-5 py-2 rounded-lg border border-neon-cyan text-neon-cyan hover:bg-neon-cyan/10 transition-colors text-sm"
+            >
+              နောက်ထပ် Account ထပ်ထည့်
             </button>
           </div>
         ) : (
-          <>
-            {step === 0 && (
-              <div className="space-y-4">
-                <Field label="Phone Number" placeholder="+95 9 xxx xxx xxx" hint="International format with country code" value={phone} onChange={setPhone} />
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="API ID" placeholder="12345678" hint="From my.telegram.org" value={apiId} onChange={setApiId} />
-                  <Field label="API Hash" placeholder="abc123..." hint="From my.telegram.org" value={apiHash} onChange={setApiHash} />
-                </div>
-                <div className="rounded-lg border border-neon-cyan/30 bg-neon-cyan/5 px-3 py-2 text-[11px] text-muted-foreground">
-                  <span className="text-neon-cyan font-medium">API credentials:</span> my.telegram.org → Log in → API development tools → Create app
-                </div>
+          <div className="space-y-4">
+            {/* Step indicator */}
+            <div className="flex items-center gap-2 mb-2">
+              <div className={`w-2 h-2 rounded-full ${step === "form" ? "bg-neon-cyan" : "bg-neon-green"}`} />
+              <span className="text-xs text-muted-foreground tracking-wider uppercase">
+                {step === "form" && "အချက်အလက် ဖြည့်ပါ"}
+                {step === "otp" && "OTP ကုဒ် ထည့်ပါ"}
+                {step === "twofa" && "2FA Password ထည့်ပါ"}
+              </span>
+            </div>
+
+            {/* Phase 1: Credentials form */}
+            <div>
+              <label className="text-xs tracking-[0.2em] uppercase text-muted-foreground">Phone Number</label>
+              <input
+                type="tel"
+                placeholder="+95 9 xxx xxx xxx"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                disabled={step !== "form"}
+                className="mt-2 w-full bg-input/60 border border-border rounded-lg px-3 py-3 text-sm focus:outline-none focus:border-neon-green focus:border-glow-green transition-shadow disabled:opacity-50"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs tracking-[0.2em] uppercase text-muted-foreground">API ID</label>
+                <input
+                  type="text"
+                  placeholder="12345678"
+                  value={apiId}
+                  onChange={(e) => setApiId(e.target.value)}
+                  disabled={step !== "form"}
+                  className="mt-2 w-full bg-input/60 border border-border rounded-lg px-3 py-3 text-sm focus:outline-none focus:border-neon-green focus:border-glow-green transition-shadow disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="text-xs tracking-[0.2em] uppercase text-muted-foreground">API Hash</label>
+                <input
+                  type="text"
+                  placeholder="abc123def..."
+                  value={apiHash}
+                  onChange={(e) => setApiHash(e.target.value)}
+                  disabled={step !== "form"}
+                  className="mt-2 w-full bg-input/60 border border-border rounded-lg px-3 py-3 text-sm focus:outline-none focus:border-neon-green focus:border-glow-green transition-shadow disabled:opacity-50"
+                />
+              </div>
+            </div>
+
+            {/* my.telegram.org link */}
+            <a
+              href="https://my.telegram.org"
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-2 text-xs text-neon-cyan hover:text-neon-cyan/80 transition-colors"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              my.telegram.org မှ API ID နှင့် API Hash ထုတ်ယူပါ
+            </a>
+            <p className="text-[10px] text-muted-foreground -mt-2">
+              my.telegram.org → Log in → API development tools → Create app
+            </p>
+
+            {/* Phase 2: OTP */}
+            {(step === "otp" || step === "twofa") && (
+              <div className="border-t border-border pt-4">
+                <label className="text-xs tracking-[0.2em] uppercase text-muted-foreground">
+                  OTP Code — Telegram app မှ လာသော ကုဒ်
+                </label>
+                <input
+                  type="text"
+                  placeholder="12345"
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value)}
+                  disabled={step === "twofa"}
+                  className="mt-2 w-full bg-input/60 border border-border rounded-lg px-3 py-3 text-sm font-mono tracking-[0.3em] focus:outline-none focus:border-neon-cyan focus:border-glow-cyan transition-shadow disabled:opacity-50"
+                />
               </div>
             )}
-            {step === 1 && (
-              <div className="space-y-4">
-                <Field label="One-Time Code" placeholder="• • • • •" hint="Sent to your Telegram app" value={otp} onChange={setOtp} />
-                <div className="rounded-lg border border-neon-cyan/30 bg-neon-cyan/5 px-3 py-2 text-[11px] text-muted-foreground">
-                  Phone: <span className="text-neon-cyan font-mono">{phone}</span>
-                </div>
-              </div>
-            )}
-            {step === 2 && (
-              <div className="space-y-4">
-                <Field label="2FA Password" type="password" placeholder="Cloud password" hint="Required — your Telegram 2FA password" value={twoFa} onChange={setTwoFa} />
-                {needs2FA && (
-                  <div className="rounded-lg border border-neon-green/30 bg-neon-green/5 px-3 py-2 text-[11px] text-neon-green">
-                    2FA is enabled on this account. Enter your cloud password to continue.
-                  </div>
-                )}
-              </div>
-            )}
-            {step === 3 && (
-              <div className="text-center py-4">
-                <Sparkles className="w-10 h-10 mx-auto text-neon-cyan text-glow-cyan" />
-                <p className="mt-3 text-sm text-muted-foreground">Saving session to database…</p>
+
+            {/* Phase 3: 2FA */}
+            {step === "twofa" && (
+              <div>
+                <label className="text-xs tracking-[0.2em] uppercase text-muted-foreground">
+                  2FA Cloud Password
+                </label>
+                <input
+                  type="password"
+                  placeholder="Cloud password"
+                  value={twoFa}
+                  onChange={(e) => setTwoFa(e.target.value)}
+                  className="mt-2 w-full bg-input/60 border border-border rounded-lg px-3 py-3 text-sm focus:outline-none focus:border-neon-green focus:border-glow-green transition-shadow"
+                />
+                <p className="mt-1 text-xs text-neon-green">2FA ဖွင့်ထားတဲ့ account — cloud password ထည့်ပါ</p>
               </div>
             )}
 
             {error && (
-              <div className="mt-3 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 {error}
               </div>
             )}
 
-            <div className="flex justify-between mt-6">
-              <button
-                onClick={() => { setStep(Math.max(0, step - 1)); setError(null); }}
-                disabled={step === 0}
-                className="px-4 py-2 text-sm text-muted-foreground disabled:opacity-30"
-              >
-                Back
-              </button>
-              {step === 0 && (
+            {/* Action button */}
+            <div className="pt-1">
+              {step === "form" && (
                 <button
                   onClick={handleSendCode}
-                  disabled={saving || !phone || !apiId || !apiHash}
-                  className="flex items-center gap-2 px-5 py-2 rounded-lg border border-neon-cyan text-neon-cyan hover:border-glow-cyan transition-shadow text-sm font-medium disabled:opacity-50"
+                  disabled={loading || !phone.trim() || !apiId.trim() || !apiHash.trim()}
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-lg border border-neon-cyan bg-neon-cyan/10 text-neon-cyan font-medium text-sm hover:bg-neon-cyan/20 transition-colors disabled:opacity-50"
                 >
-                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  Send OTP
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Phone className="w-4 h-4" />}
+                  Send Code
                 </button>
               )}
-              {step === 1 && (
+              {step === "otp" && (
                 <button
-                  onClick={handleSignIn}
-                  disabled={saving || !otp}
-                  className="flex items-center gap-2 px-5 py-2 rounded-lg border border-neon-cyan text-neon-cyan hover:border-glow-cyan transition-shadow text-sm font-medium disabled:opacity-50"
+                  onClick={handleVerify}
+                  disabled={loading || !otp.trim()}
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-lg border border-neon-green bg-neon-green/10 text-neon-green font-medium text-sm hover:bg-neon-green/20 transition-colors disabled:opacity-50"
                 >
-                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  Verify OTP
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                  Verify &amp; Login
                 </button>
               )}
-              {step === 2 && (
+              {step === "twofa" && (
                 <button
-                  onClick={handleSignIn2FA}
-                  disabled={saving || !twoFa}
-                  className="flex items-center gap-2 px-5 py-2 rounded-lg bg-neon-green/20 border border-neon-green text-neon-green border-glow-green text-sm font-medium disabled:opacity-60"
+                  onClick={handleVerify2FA}
+                  disabled={loading || !twoFa.trim()}
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-lg border border-neon-green bg-neon-green/20 text-neon-green font-medium text-sm hover:bg-neon-green/30 transition-colors disabled:opacity-50"
                 >
-                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  Sign In
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                  Sign In with 2FA
                 </button>
               )}
             </div>
-          </>
+          </div>
         )}
-      </section>
+      </div>
 
+      {/* Existing accounts list */}
       {accounts.length > 0 && (
         <section className="neon-card text-neon-cyan p-4">
-          <h2 className="font-display tracking-[0.2em] text-sm text-neon-cyan mb-3">MY ACCOUNTS ({accounts.length})</h2>
+          <h2 className="font-display tracking-[0.2em] text-sm text-neon-cyan mb-3">
+            MY ACCOUNTS ({accounts.length})
+          </h2>
           <ul className="divide-y divide-border">
             {accounts.map((a) => (
-              <li key={a.id} className="flex items-center justify-between py-2.5">
-                <div>
+              <li key={a.id} className="flex items-center justify-between py-3">
+                <div className="min-w-0 flex-1">
                   <div className="text-sm font-mono text-foreground">{a.phone}</div>
-                  <div className="text-xs text-muted-foreground capitalize">
-                    {a.type.replace("_", " ")} · {a.region}
+                  <div className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
+                    <span>{a.type.replace("_", " ")}</span>
+                    {a.api_id && <span className="font-mono text-neon-cyan/70">ID:{a.api_id}</span>}
                     {a.session_string ? (
-                      <span className="ml-2 text-neon-green">● session active</span>
+                      <span className="text-neon-green">● session active</span>
                     ) : (
-                      <span className="ml-2 text-destructive">● no session</span>
+                      <span className="text-destructive">● no session</span>
                     )}
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 ml-3">
                   <button
                     onClick={() => cycleStatus(a)}
-                    className={`text-[10px] tracking-wider uppercase px-2 py-0.5 rounded-full border transition-colors cursor-pointer ${
-                      a.status === "active" ? "border-neon-green text-neon-green"
-                        : a.status === "idle" ? "border-neon-cyan text-neon-cyan"
+                    title="Status ပြောင်း"
+                    className={`text-[10px] tracking-wider uppercase px-2 py-0.5 rounded-full border transition-colors ${
+                      a.status === "active"
+                        ? "border-neon-green text-neon-green"
+                        : a.status === "idle"
+                        ? "border-neon-cyan text-neon-cyan"
                         : "border-destructive text-destructive"
                     }`}
                   >
                     {a.status}
                   </button>
-                  <button onClick={() => handleDelete(a.id)} className="text-muted-foreground hover:text-destructive transition-colors">
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
+                  <button
+                    onClick={() => handleDelete(a.id)}
+                    className="text-muted-foreground hover:text-destructive transition-colors"
+                    title="ဖျက်"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
               </li>
@@ -302,23 +342,5 @@ function CreateAccount() {
         </section>
       )}
     </AppLayout>
-  );
-}
-
-function Field({
-  label, placeholder, type = "text", hint, value, onChange,
-}: { label: string; placeholder: string; type?: string; hint: string; value: string; onChange: (v: string) => void }) {
-  return (
-    <div>
-      <label className="text-xs tracking-[0.2em] uppercase text-muted-foreground">{label}</label>
-      <input
-        type={type}
-        placeholder={placeholder}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="mt-2 w-full bg-input/60 border border-border rounded-lg px-3 py-3 text-sm focus:outline-none focus:border-neon-green focus:border-glow-green transition-shadow"
-      />
-      <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
-    </div>
   );
 }
