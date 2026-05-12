@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================
 #  AutoForward — Quick Redeploy
-#  Run this after pushing updates to GitHub
-#  Usage: bash /var/www/autoforward/vps/deploy.sh
+#  Called automatically by GitHub Actions on push to main.
+#  Can also be run manually: bash /var/www/autoforward/vps/deploy.sh
 # ============================================================
 set -e
 
